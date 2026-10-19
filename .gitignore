@@ -218,3 +218,33 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# HRTEM project data and local runtime state
+logs/
+backups/
+outputs/
+results/
+test_maps/
+.cache/
+.downloads/
+sample_results/
+config/export_settings.json
+INSTALL_REPORT.md
+TASK_STATE.md
+README_请先看.txt
+tools/download_wheels.py
+tools/reproduce_detection.ps1
+tools/write_install_report.py
+*.dm3
+*.dm4
+*.tif
+*.tiff
+*.png
+*.jpg
+*.jpeg
+*.xlsx
+*.xls
+*.csv
+*.npz
+Thumbs.db
+Desktop.ini
