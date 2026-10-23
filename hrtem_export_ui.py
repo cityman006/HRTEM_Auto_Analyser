@@ -95,12 +95,12 @@ def open_settings(parent: tk.Tk, root: Path, current: dict, on_saved) -> tk.Topl
                           (2,'roi_ok_color','OK 区域框颜色'),(3,'roi_verify_color','VERIFY 区域框颜色'),
                           (4,'label_background','标签底色'),(5,'label_background_alpha','标签底色透明度 0-1'),
                           (6,'arrow_size','箭头大小'),(7,'arrow_linewidth','箭头线宽'),
-                          (8,'roi_linewidth','区域框线宽')):
+                          (8,'roi_linewidth','区域框线宽'),(9,'circle_size','圆圈半径 (px)')):
         entry(style_tab,row,label,key)
-    entry(style_tab,9,'标签位置','label_position',['top','center','bottom'])
-    for row,key,label in ((10,'show_title','显示标题'),(11,'show_axes','显示坐标轴'),(12,'show_roi','显示 ROI 方框')):
+    entry(style_tab,10,'标签位置','label_position',['top','center','bottom'])
+    for row,key,label in ((11,'show_title','显示标题'),(12,'show_axes','显示坐标轴'),(13,'show_roi','显示 ROI 方框')):
         ttk.Checkbutton(style_tab,text=label,variable=vars[key]).grid(row=row,column=0,columnspan=2,sticky='w',pady=4)
-    entry(style_tab,13,'画布背景','background',['white','transparent'])
+    entry(style_tab,14,'画布背景','background',['white','transparent'])
     ttk.Label(format_tab,text='可同时选择多种输出格式').grid(row=0,column=0,columnspan=2,sticky='w',pady=5)
     formats=ttk.Frame(format_tab);formats.grid(row=1,column=0,columnspan=2,sticky='w')
     for i,fmt in enumerate(format_vars):

@@ -224,6 +224,7 @@ logs/
 backups/
 outputs/
 results/
+hrtem_output/
 test_maps/
 .cache/
 .downloads/
@@ -248,3 +249,12 @@ tools/write_install_report.py
 *.npz
 Thumbs.db
 Desktop.ini
+
+# Workbench projects embed private microscopy pixels and local presets.
+*.hrtemproj
+projects/
+config/presets/
+
+# Local acceptance reports contain private research paths and measurements.
+/SAED_HRTEM_EXTENSION_REPORT.md
+/WORKBENCH_UPGRADE_REPORT.md
