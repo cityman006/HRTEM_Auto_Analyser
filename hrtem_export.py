@@ -29,6 +29,7 @@ DEFAULT = {
     'roi_ok_color': '#00ffc8', 'roi_verify_color': '#ffcc33',
     'label_background': '#000000', 'label_background_alpha': 0.83,
     'arrow_size': 6.0, 'arrow_linewidth': 2.1, 'roi_linewidth': 0.85,
+    'circle_size': 8.0,
     'label_position': 'top', 'show_title': True, 'show_axes': True,
     'show_roi': True, 'background': 'white', 'formats': ['png'],
     'dpi': 300, 'width_mm': 180.0, 'height_mm': 0.0,
@@ -85,7 +86,7 @@ def validate_settings(value: dict) -> dict:
     for name in ('label_size','title_size','axis_size','tick_size','legend_size'):
         settings[name] = float(settings[name])
         if not 5 <= settings[name] <= 72: raise ValueError(f'{name} must be 5-72 pt.')
-    for name in ('arrow_size','arrow_linewidth','roi_linewidth'):
+    for name in ('arrow_size','arrow_linewidth','roi_linewidth','circle_size'):
         settings[name] = float(settings[name])
         if not 0.2 <= settings[name] <= 50: raise ValueError(f'{name} is out of range.')
     settings['label_background_alpha'] = float(settings['label_background_alpha'])

@@ -25,25 +25,12 @@ from matplotlib.patches import Rectangle
 import numpy as np
 from scipy.ndimage import gaussian_filter, gaussian_filter1d, map_coordinates, maximum_filter
 from scipy.signal import correlate
-import tifffile
+from microscopy_io import load_grayscale as _load_microscopy_grayscale
 
 
 def load_grayscale(path):
-    image = tifffile.imread(str(path)) if Path(path).suffix.lower() in ('.tif', '.tiff') else plt.imread(str(path))
-    image = np.asarray(image)
-    if image.ndim == 3:
-        if image.shape[-1] >= 3:
-            image = 0.2126*image[..., 0] + 0.7152*image[..., 1] + 0.0722*image[..., 2]
-        else:
-            image = image[..., 0]
-    if image.ndim != 2:
-        raise ValueError(f'Expected a 2D single-image file; received shape {image.shape}.')
-    image = image.astype('float64')
-    if not np.isfinite(image).all():
-        raise ValueError('Image contains invalid pixel values (NaN/Inf).')
-    if image.max() == image.min():
-        raise ValueError('Image has no intensity contrast.')
-    return image
+    """Load one 2-D image; scientific measurement logic begins after this step."""
+    return _load_microscopy_grayscale(path)
 
 
 def parabolic_offset(a, b, c):
@@ -319,7 +306,7 @@ def run_selftest():
 
 def main():
     p=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('-i','--input',type=Path,help='Source HRTEM image (TIF/TIFF/PNG)')
+    p.add_argument('-i','--input',type=Path,help='Source HRTEM image (DM3/DM4/TIF/TIFF/PNG)')
     p.add_argument('-o','--output',type=Path,default=Path('hrtem_output'))
     p.add_argument('--grid',default='4x4',help='Number of equal regions, COLSxROWS (default: 4x4)')
     p.add_argument('--roi',action='append',help='Rectangular ROI x,y,width,height (can repeat). Overrides --grid')
