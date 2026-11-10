@@ -16,22 +16,31 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
+
 from hrtem_export import load_settings, settings_path
 
 ROOT = Path(__file__).resolve().parent
 CORE = ROOT / 'hrtem_spacing.py'
+ROI_CORE = ROOT / 'hrtem_fft_tools.py'
+SAED_CORE = ROOT / 'saed_analysis.py'
 DEFAULT_IMAGE = ROOT / '位错分析.tif'
+IMAGE_TYPES = ('.dm3', '.dm4', '.tif', '.tiff', '.png')
 
 
 class HRTEMApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title('HRTEM 晶格间距自动分析 | FFT + ACF')
-        root.geometry('1000x720')
-        root.minsize(830, 590)
+        root.title('HRTEM Auto Analyser | HRTEM + SAED')
+        root.geometry('1100x820')
+        root.minsize(900, 680)
         root.configure(background='#f5f7fb')
         self.running = False
         self.last_output: Path | None = None
+        self.last_hrtem_output: Path | None = None
+        self.last_saed_output: Path | None = None
+        self.last_roi_output: Path | None = None
+        self.current_job = 'hrtem'
         self.export_settings, self.export_warning = load_settings(ROOT)
         self.image_path = tk.StringVar(value=str(DEFAULT_IMAGE) if DEFAULT_IMAGE.is_file() else '')
         self.grid_value = tk.StringVar(value='4x4')
@@ -40,7 +49,17 @@ class HRTEMApp:
         self.calibration = tk.StringVar(value='')
         self.open_image_after = tk.BooleanVar(value=True)
         self.pick_roi = tk.BooleanVar(value=False)
+        self.roi_specs = tk.StringVar(value='')
+        self.pick_fft_spots = tk.BooleanVar(value=False)
+        self.saed_path = tk.StringVar(value='')
+        self.saed_calibration = tk.StringVar(value='')
+        self.saed_max_rings = tk.StringVar(value='12')
+        self.saed_max_spots = tk.StringVar(value='48')
         self.status = tk.StringVar(value='准备就绪。请选择一张图片，然后点击“开始分析”。')
+        self.hrtem_result_link = tk.StringVar(value='HRTEM 结果文件夹：尚未生成')
+        self.saed_result_link = tk.StringVar(value='SAED 结果文件夹：尚未生成')
+        self.hrtem_result_target: Path | None = None
+        self.saed_result_target: Path | None = None
         self._build()
         if self.export_warning:
             self._append('EXPORT SETTINGS: ' + self.export_warning + '\n')
@@ -57,48 +76,38 @@ class HRTEMApp:
         style.configure('Title.TLabel', font=('Microsoft YaHei UI', 17, 'bold'), foreground='#12315c')
         style.configure('Body.TLabel', font=('Microsoft YaHei UI', 10))
         style.configure('Action.TButton', font=('Microsoft YaHei UI', 11, 'bold'), padding=(10, 7))
+        style.configure('Link.TLabel', font=('Microsoft YaHei UI', 9, 'underline'), foreground='#0b63ce')
 
-        frame = ttk.Frame(self.root, padding=18)
+        frame = ttk.Frame(self.root, padding=14)
         frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text='高分辨 TEM 晶格条纹自动识别', style='Title.TLabel').pack(anchor='w')
-        ttk.Label(frame, text='局部 FFT 峰值识别 + 自相关校核；自动保存标注图、数据 CSV、频谱验证图', style='Body.TLabel').pack(anchor='w', pady=(4, 14))
+        ttk.Label(frame, text='HRTEM 晶格与 SAED 衍射分析', style='Title.TLabel').pack(anchor='w')
+        ttk.Label(frame, text='原有 FFT + ACF 测量保留；SAED 与 ROI/IFFT 使用独立流程', style='Body.TLabel').pack(anchor='w', pady=(3, 8))
+        self.notebook = ttk.Notebook(frame)
+        self.notebook.pack(fill='x')
+        hrtem_tab = ttk.Frame(self.notebook, padding=12)
+        saed_tab = ttk.Frame(self.notebook, padding=12)
+        export_tab = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(hrtem_tab, text='HRTEM')
+        self.notebook.add(saed_tab, text='SAED')
+        self.notebook.add(export_tab, text='Export Settings')
+        self._build_hrtem_tab(hrtem_tab)
+        self._build_saed_tab(saed_tab)
+        self._build_export_tab(export_tab)
 
-        file_frame = ttk.LabelFrame(frame, text=' 1. 选择图像 ', padding=(10, 9))
-        file_frame.pack(fill='x')
-        file_frame.columnconfigure(0, weight=1)
-        ttk.Entry(file_frame, textvariable=self.image_path).grid(row=0, column=0, sticky='ew', padx=(0, 8))
-        ttk.Button(file_frame, text='浏览…', command=self.pick_file).grid(row=0, column=1)
-        ttk.Label(file_frame, text='支持 TIFF / TIF / PNG；随包附带“位错分析.tif”，无需再复制。').grid(row=1, column=0, columnspan=2, sticky='w', pady=(7, 0))
+        workspace_actions = ttk.Frame(frame)
+        workspace_actions.pack(fill='x', pady=(8, 0))
+        for label, command in [('HRTEM 图像工作区', lambda: self.open_workbench('hrtem')),
+                               ('SAED 图像工作区', lambda: self.open_workbench('saed')),
+                               ('历史结果浏览器', self.browse_history),
+                               ('批量分析', self.open_batch_analysis),
+                               ('打开项目文件', self.open_project_file)]:
+            ttk.Button(workspace_actions, text=label, command=command).pack(side='left', padx=(0, 8))
 
-        settings = ttk.LabelFrame(frame, text=' 2. 分析参数 ', padding=(10, 10))
-        settings.pack(fill='x', pady=(12, 0))
-        for col in (1, 3, 5):
-            settings.columnconfigure(col, weight=1)
-        ttk.Label(settings, text='自动分区:').grid(row=0, column=0, sticky='w', padx=(0, 6), pady=5)
-        ttk.Combobox(settings, textvariable=self.grid_value, values=['1x1','2x2','4x4','8x8'], width=12, state='readonly').grid(row=0, column=1, sticky='ew', padx=(0, 18))
-        ttk.Label(settings, text='最小周期(px):').grid(row=0, column=2, sticky='w', padx=(0, 6))
-        ttk.Entry(settings, textvariable=self.minimum, width=10).grid(row=0, column=3, sticky='ew', padx=(0, 18))
-        ttk.Label(settings, text='最大周期(px):').grid(row=0, column=4, sticky='w', padx=(0, 6))
-        ttk.Entry(settings, textvariable=self.maximum, width=10).grid(row=0, column=5, sticky='ew')
-
-        ttk.Label(settings, text='像素标定(nm/px):').grid(row=1, column=0, sticky='w', pady=5)
-        ttk.Entry(settings, textvariable=self.calibration).grid(row=1, column=1, sticky='ew', padx=(0, 18))
-        ttk.Label(settings, text='没有仪器标定时请留空，输出 px，不会虚构 nm。', foreground='#a04900').grid(row=1, column=2, columnspan=4, sticky='w')
-        ttk.Checkbutton(settings, text='运行后打开标注图', variable=self.open_image_after).grid(row=2, column=0, columnspan=3, sticky='w', pady=(6, 0))
-        ttk.Checkbutton(settings, text='手动选择一个 ROI 区域', variable=self.pick_roi).grid(row=2, column=3, columnspan=3, sticky='w', pady=(6, 0))
-
-        actions = ttk.Frame(frame)
-        actions.pack(fill='x', pady=(12, 8))
-        self.run_button = ttk.Button(actions, text='▶ 开始分析', style='Action.TButton', command=self.run_analysis)
-        self.run_button.pack(side='left')
-        ttk.Button(actions, text='打开结果文件夹', command=self.open_output).pack(side='left', padx=(12, 0))
-        ttk.Button(actions, text='运行FFT自检', command=self.run_selftest).pack(side='left', padx=(12, 0))
-        ttk.Button(actions, text='输出设置', command=self.show_export_settings).pack(side='left', padx=(12, 0))
-        ttk.Button(actions, text='按当前设置重新导出', command=self.reexport_current).pack(side='left', padx=(12, 0))
-        ttk.Button(actions, text='标定与结果说明', command=self.show_help).pack(side='right')
-
-        ttk.Label(frame, textvariable=self.status, foreground='#145e43', font=('Microsoft YaHei UI', 10, 'bold'), wraplength=900).pack(anchor='w', pady=(3, 8))
-        logger = ttk.LabelFrame(frame, text=' 3. 程序运行日志 / 结果 ', padding=(8, 8))
+        self.status_link = ttk.Label(frame, textvariable=self.status, foreground='#145e43',
+                  font=('Microsoft YaHei UI', 10, 'bold'), wraplength=1000, cursor='hand2')
+        self.status_link.pack(anchor='w', pady=(8, 6))
+        self.status_link.bind('<Button-1>', lambda _event: self.open_result_folder('latest'))
+        logger = ttk.LabelFrame(frame, text='程序运行日志 / 结果', padding=(8, 8))
         logger.pack(fill='both', expand=True)
         logger.columnconfigure(0, weight=1)
         logger.rowconfigure(0, weight=1)
@@ -111,26 +120,131 @@ class HRTEMApp:
         self._append('Results are saved in: <program folder>\\outputs\\<image-name>_<timestamp>\\\n')
         self._append('IMPORTANT: Uncalibrated measurements are in pixels, NOT nanometers.\n')
 
+    def _build_hrtem_tab(self, tab):
+        tab.columnconfigure(1, weight=1); tab.columnconfigure(3, weight=1); tab.columnconfigure(5, weight=1)
+        ttk.Label(tab, text='HRTEM 图像').grid(row=0, column=0, sticky='w')
+        ttk.Entry(tab, textvariable=self.image_path).grid(row=0, column=1, columnspan=4, sticky='ew', padx=6)
+        ttk.Button(tab, text='浏览…', command=self.pick_file).grid(row=0, column=5, sticky='e')
+        ttk.Label(tab, text='自动分区').grid(row=1, column=0, sticky='w', pady=6)
+        ttk.Combobox(tab, textvariable=self.grid_value, values=['1x1','2x2','4x4','8x8'], state='readonly', width=10).grid(row=1, column=1, sticky='ew', padx=6)
+        ttk.Label(tab, text='最小周期(px)').grid(row=1, column=2, sticky='w')
+        ttk.Entry(tab, textvariable=self.minimum, width=10).grid(row=1, column=3, sticky='ew', padx=6)
+        ttk.Label(tab, text='最大周期(px)').grid(row=1, column=4, sticky='w')
+        ttk.Entry(tab, textvariable=self.maximum, width=10).grid(row=1, column=5, sticky='ew')
+        ttk.Label(tab, text='标定 (nm/px)').grid(row=2, column=0, sticky='w')
+        ttk.Entry(tab, textvariable=self.calibration).grid(row=2, column=1, sticky='ew', padx=6)
+        ttk.Label(tab, text='留空时只输出 px', foreground='#a04900').grid(row=2, column=2, sticky='w')
+        ttk.Checkbutton(tab, text='运行后打开标注图', variable=self.open_image_after).grid(row=2, column=3, columnspan=2, sticky='w')
+        ttk.Checkbutton(tab, text='旧流程手选单 ROI', variable=self.pick_roi).grid(row=2, column=5, sticky='w')
+        ttk.Label(tab, text='IFFT ROI（x,y,w,h；多个用分号分隔）').grid(row=3, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        ttk.Entry(tab, textvariable=self.roi_specs).grid(row=3, column=2, columnspan=3, sticky='ew', padx=6, pady=(6, 0))
+        ttk.Checkbutton(tab, text='在 FFT 图中手动选斑', variable=self.pick_fft_spots).grid(row=3, column=5, sticky='w', pady=(6, 0))
+        actions = ttk.Frame(tab); actions.grid(row=4, column=0, columnspan=6, sticky='ew', pady=(10, 0))
+        self.run_button = ttk.Button(actions, text='▶ 原有 HRTEM 分析', style='Action.TButton', command=self.run_analysis)
+        self.run_button.pack(side='left')
+        self.roi_button = ttk.Button(actions, text='ROI FFT + 选斑 + IFFT', command=self.run_roi_ifft)
+        self.roi_button.pack(side='left', padx=8)
+        ttk.Button(actions, text='运行 FFT 自检', command=self.run_selftest).pack(side='left')
+        ttk.Button(actions, text='打开结果', command=self.open_output).pack(side='right')
+        link = ttk.Label(tab, textvariable=self.hrtem_result_link, style='Link.TLabel', cursor='hand2')
+        link.grid(row=5, column=0, columnspan=6, sticky='w', pady=(8, 0))
+        link.bind('<Button-1>', lambda _event: self.open_result_folder('hrtem'))
+
+    def _build_saed_tab(self, tab):
+        for col in (1, 3, 5): tab.columnconfigure(col, weight=1)
+        ttk.Label(tab, text='SAED / DM 图像').grid(row=0, column=0, sticky='w')
+        ttk.Entry(tab, textvariable=self.saed_path).grid(row=0, column=1, columnspan=4, sticky='ew', padx=6)
+        ttk.Button(tab, text='打开 DM3/DM4/TIFF/PNG…', command=self.pick_saed_file).grid(row=0, column=5)
+        ttk.Label(tab, text='倒易标定 (nm⁻¹/px)').grid(row=1, column=0, sticky='w', pady=6)
+        ttk.Entry(tab, textvariable=self.saed_calibration).grid(row=1, column=1, sticky='ew', padx=6)
+        ttk.Label(tab, text='最大环数').grid(row=1, column=2, sticky='w')
+        ttk.Entry(tab, textvariable=self.saed_max_rings, width=8).grid(row=1, column=3, sticky='ew', padx=6)
+        ttk.Label(tab, text='最大斑点数').grid(row=1, column=4, sticky='w')
+        ttk.Entry(tab, textvariable=self.saed_max_spots, width=8).grid(row=1, column=5, sticky='ew')
+        ttk.Label(tab, text='没有可靠倒易标定时，仅输出半径/距离像素值，不生成 d。', foreground='#a04900').grid(row=2, column=0, columnspan=6, sticky='w')
+        actions = ttk.Frame(tab); actions.grid(row=3, column=0, columnspan=6, sticky='ew', pady=(10, 0))
+        self.saed_button = ttk.Button(actions, text='▶ 自动识别环和斑点', style='Action.TButton', command=self.run_saed)
+        self.saed_button.pack(side='left')
+        ttk.Button(actions, text='手动增删/修正', command=self.edit_saed).pack(side='left', padx=8)
+        ttk.Button(actions, text='按当前样式重新导出', command=lambda: self.reexport_saved('saed')).pack(side='left')
+        link = ttk.Label(tab, textvariable=self.saed_result_link, style='Link.TLabel', cursor='hand2')
+        link.grid(row=4, column=0, columnspan=6, sticky='w', pady=(8, 0))
+        link.bind('<Button-1>', lambda _event: self.open_result_folder('saed'))
+
+    def _build_export_tab(self, tab):
+        ttk.Label(tab, text='字体、字号、颜色、线宽、箭头、圆圈、背景、DPI、SVG 文字模式及 PDF/SVG/PNG/TIFF 格式。', wraplength=950).pack(anchor='w')
+        ttk.Label(tab, text='SVG/PDF 中显微图像底图保持位图；文字、箭头、环和斑点为独立矢量对象。', foreground='#145e43').pack(anchor='w', pady=(4, 10))
+        buttons = ttk.Frame(tab); buttons.pack(fill='x')
+        ttk.Button(buttons, text='打开完整输出设置…', command=self.show_export_settings).pack(side='left')
+        ttk.Button(buttons, text='重新导出原有 HRTEM', command=lambda: self.reexport_saved('hrtem')).pack(side='left', padx=8)
+        ttk.Button(buttons, text='重新导出 ROI/IFFT', command=lambda: self.reexport_saved('roi')).pack(side='left')
+        ttk.Button(buttons, text='重新导出 SAED', command=lambda: self.reexport_saved('saed')).pack(side='left', padx=8)
+
     def _append(self, line):
         self.log.configure(state='normal')
         self.log.insert('end', line)
         self.log.see('end')
         self.log.configure(state='disabled')
 
+    def workbench_parameters(self):
+        return {'min_spacing': float(self.minimum.get()), 'max_spacing': float(self.maximum.get()),
+                'nm_per_pixel': float(self.calibration.get()) if self.calibration.get().strip() else None,
+                'reciprocal_calibration': float(self.saed_calibration.get()) if self.saed_calibration.get().strip() else None,
+                'max_rings': int(self.saed_max_rings.get()), 'max_spots': int(self.saed_max_spots.get())}
+
+    def workbench_output(self, output, mode):
+        self.last_output = output
+        self._set_result_link(mode, output)
+        self.status.set('工作区结果已保存（点击打开）：' + str(output))
+
+    def open_workbench(self, mode, session=None):
+        try:
+            from image_workbench import open_workspace
+            source = self.saed_path.get() if mode == 'saed' else self.image_path.get()
+            return open_workspace(self.root, ROOT, source=source if source and not session else None,
+                mode=mode, params=self.workbench_parameters(), settings=self.export_settings,
+                session=session, on_output=self.workbench_output)
+        except Exception as exc:
+            messagebox.showerror('工作区', str(exc), parent=self.root)
+
+    def browse_history(self):
+        from history_browser import open_history
+        open_history(self.root, ROOT, lambda path: self.open_workbench('hrtem', session=path),
+                     on_style=self.show_export_settings)
+
+    def open_project_file(self):
+        path = filedialog.askopenfilename(parent=self.root, title='打开工作区项目',
+                                         filetypes=[('HRTEM project', '*.hrtemproj')])
+        if path: self.open_workbench('hrtem', session=path)
+
+    def open_batch_analysis(self):
+        try:
+            from batch_ui import open_batch
+            open_batch(self.root, ROOT, self.workbench_parameters(), self.export_settings)
+        except Exception as exc:
+            messagebox.showerror('批量分析', str(exc), parent=self.root)
+
     def pick_file(self):
         path = filedialog.askopenfilename(
             title='选择 HRTEM 图像',
-            filetypes=[('HRTEM image', '*.tif *.tiff *.png'), ('All files', '*.*')]
+            filetypes=[('Microscopy image', '*.dm3 *.dm4 *.tif *.tiff *.png'), ('All files', '*.*')]
         )
         if path:
             self.image_path.set(path)
+
+    def pick_saed_file(self):
+        path = filedialog.askopenfilename(
+            title='选择 SAED 图像',
+            filetypes=[('DM / image', '*.dm3 *.dm4 *.tif *.tiff *.png'), ('All files', '*.*')])
+        if path:
+            self.saed_path.set(path)
 
     def _validate(self):
         source = Path(self.image_path.get().strip().strip('"'))
         if not source.is_file():
             raise ValueError('找不到输入图片。请使用“浏览”选择图片。')
-        if source.suffix.lower() not in ('.tif','.tiff','.png'):
-            raise ValueError('请选择 TIF、TIFF 或 PNG 图像。')
+        if source.suffix.lower() not in IMAGE_TYPES:
+            raise ValueError('请选择 DM3、DM4、TIF、TIFF 或 PNG 图像。')
         if not re.fullmatch(r'\d+x\d+', self.grid_value.get()):
             raise ValueError('分区数量应为 4x4 等格式。')
         min_period = float(self.minimum.get())
@@ -160,10 +274,88 @@ class HRTEMApp:
         args += ['--export-settings', str(settings_path(ROOT))]
         if self.pick_roi.get():
             args.append('--pick-roi')
-        self.last_output = out
+        self.last_output = self.last_hrtem_output = out
         self._append('\n=== START: ' + source.name + ' ===\n')
         self._append('Calibration: ' + (f'{nm} nm/px\n' if nm else 'NOT SUPPLIED: px only\n'))
         self._launch(args, output=out)
+
+    def run_roi_ifft(self):
+        if self.running:
+            return
+        try:
+            source, min_period, max_period, nm = self._validate()
+            raw_rois = [item.strip() for item in self.roi_specs.get().split(';') if item.strip()]
+            for item in raw_rois:
+                values = [int(v.strip()) for v in item.split(',')]
+                if len(values) != 4 or values[2] < 64 or values[3] < 64:
+                    raise ValueError('每个 ROI 必须是 x,y,width,height，且宽高至少 64 px。')
+        except (ValueError, OSError) as exc:
+            messagebox.showerror('输入参数有误', str(exc)); return
+        safe_name = re.sub(r'[\\/:*?"<>|]', '_', source.stem)
+        out = ROOT / 'outputs' / (safe_name + '_roi_ifft_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+        args = [sys.executable, str(ROI_CORE), '-i', str(source), '-o', str(out),
+                '--min-spacing', str(min_period), '--max-spacing', str(max_period),
+                '--export-settings', str(settings_path(ROOT))]
+        for item in raw_rois: args += ['--roi', item]
+        if not raw_rois: args.append('--pick-roi')
+        if self.pick_fft_spots.get(): args.append('--pick-spots')
+        if nm is not None: args += ['--nm-per-pixel', str(nm)]
+        self.last_output = self.last_roi_output = out
+        self._append('\n=== ROI FFT / spot selection / IFFT: ' + source.name + ' ===\n')
+        self._launch(args, output=out, kind='roi')
+
+    def _validate_saed(self):
+        source = Path(self.saed_path.get().strip().strip('"'))
+        if not source.is_file() or source.suffix.lower() not in IMAGE_TYPES:
+            raise ValueError('请选择存在的 DM3、DM4、TIFF 或 PNG 图像。')
+        calibration = self.saed_calibration.get().strip()
+        calibration = float(calibration) if calibration else None
+        if calibration is not None and calibration <= 0:
+            raise ValueError('倒易标定必须大于 0。')
+        rings, spots = int(self.saed_max_rings.get()), int(self.saed_max_spots.get())
+        if not 1 <= rings <= 100 or not 1 <= spots <= 500:
+            raise ValueError('环数应为 1-100，斑点数应为 1-500。')
+        return source, calibration, rings, spots
+
+    def run_saed(self):
+        if self.running:
+            return
+        try:
+            source, calibration, rings, spots = self._validate_saed()
+        except (ValueError, OSError) as exc:
+            messagebox.showerror('输入参数有误', str(exc)); return
+        safe_name = re.sub(r'[\\/:*?"<>|]', '_', source.stem)
+        out = ROOT / 'outputs' / (safe_name + '_saed_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+        args = [sys.executable, str(SAED_CORE), '-i', str(source), '-o', str(out),
+                '--max-rings', str(rings), '--max-spots', str(spots),
+                '--export-settings', str(settings_path(ROOT))]
+        if calibration is not None: args += ['--reciprocal-calibration', str(calibration)]
+        self.last_output = self.last_saed_output = out
+        self._append('\n=== SAED ring and spot analysis: ' + source.name + ' ===\n')
+        self._launch(args, output=out, kind='saed')
+
+    def edit_saed(self):
+        session = self.last_saed_output
+        if session is None or not (session / 'saed_results.json').is_file():
+            selected = filedialog.askdirectory(parent=self.root, title='选择包含 saed_results.json 的结果目录', initialdir=str(ROOT/'outputs'))
+            if not selected: return
+            session = Path(selected)
+        try:
+            result = json.loads((session/'saed_results.json').read_text(encoding='utf-8-sig'))
+            with np.load(session/'saed_session.npz') as saved:
+                image = saved['image'].copy(); profile = saved['radial_profile'].copy()
+        except Exception as exc:
+            messagebox.showerror('无法打开 SAED 会话', str(exc)); return
+        from saed_analysis import save_saed_session
+        from saed_editor import open_saed_editor
+        def saved(edited):
+            out = ROOT/'outputs'/(session.name+'_manual_'+datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+            save_saed_session(image, profile, edited, out, self.export_settings, edited.get('source_metadata'))
+            self.last_output = self.last_saed_output = out
+            self._set_result_link('saed', out)
+            self.status.set('手动修正已保存并重新导出：'+str(out))
+            self._append('Manual SAED corrections saved without rerunning detection: '+str(out)+'\n')
+        open_saed_editor(self.root, image, result, saved)
 
     def show_export_settings(self):
         from hrtem_export_ui import open_settings
@@ -173,24 +365,35 @@ class HRTEMApp:
         open_settings(self.root, ROOT, self.export_settings, saved)
 
     def reexport_current(self):
+        self.reexport_saved('hrtem')
+
+    def reexport_saved(self, kind):
         if self.running:
             return
-        session = self.last_output
-        if session is None or not (session / 'analysis_session.json').is_file():
+        spec = {
+            'hrtem': (self.last_hrtem_output, 'analysis_session.json', CORE),
+            'saed': (self.last_saed_output, 'saed_results.json', SAED_CORE),
+            'roi': (self.last_roi_output, 'summary.json', ROI_CORE),
+        }[kind]
+        session, marker, program = spec
+        if session is None or not (session / marker).is_file():
             selected = filedialog.askdirectory(parent=self.root,
-                title='选择包含 analysis_session.json 的新版本分析结果目录', initialdir=str(ROOT / 'outputs'))
+                title='选择包含 '+marker+' 的结果目录', initialdir=str(ROOT / 'outputs'))
             if not selected:
                 return
             session = Path(selected)
-        if not (session / 'analysis_session.json').is_file():
+        if not (session / marker).is_file():
             messagebox.showerror('无法重新导出',
-                '旧版结果缺少已保存的诊断会话。请先对原图进行一次新版本分析；不会暗中重算 FFT。')
+                '所选目录缺少 '+marker+'；需要先保存完整分析会话。')
             return
         out = ROOT / 'outputs' / (session.name + '_reexport_' + datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
         self.last_output = out
-        self._append('\n=== Re-export from saved measurements; no FFT or ACF recomputation ===\n')
-        self._launch([sys.executable, str(CORE), '--re-export-session', str(session),
-                      '-o', str(out), '--export-settings', str(settings_path(ROOT))], output=out)
+        if kind == 'hrtem': self.last_hrtem_output = out
+        if kind == 'saed': self.last_saed_output = out
+        if kind == 'roi': self.last_roi_output = out
+        self._append('\n=== Re-export from saved results; no measurement recomputation ===\n')
+        self._launch([sys.executable, str(program), '--re-export-session', str(session),
+                      '-o', str(out), '--export-settings', str(settings_path(ROOT))], output=out, kind=kind)
 
     def run_selftest(self):
         if self.running:
@@ -198,9 +401,12 @@ class HRTEMApp:
         self._append('\n=== Synthetic FFT self-test ===\n')
         self._launch([sys.executable, str(CORE), '--self-test'])
 
-    def _launch(self, args, output=None):
+    def _launch(self, args, output=None, kind='hrtem'):
         self.running = True
+        self.current_job = kind
         self.run_button.configure(state='disabled')
+        self.roi_button.configure(state='disabled')
+        self.saed_button.configure(state='disabled')
         self.status.set('正在运行分析…（窗口不会卡死；运行结果显示在下方）')
         threading.Thread(target=self._worker, args=(args, output), daemon=True).start()
 
@@ -222,12 +428,28 @@ class HRTEMApp:
     def _finish(self, result, output):
         self.running = False
         self.run_button.configure(state='normal')
+        self.roi_button.configure(state='normal')
+        self.saed_button.configure(state='normal')
         if result != 0:
             self.status.set('分析失败，请查看下方日志。可用 03_CHECK_AND_REPAIR.cmd 修复环境。')
             messagebox.showerror('分析失败', '分析进程退出码：' + str(result) + '\n请将窗口中的日志发给我排查。')
             return
+        if output is not None:
+            self._set_result_link('saed' if self.current_job == 'saed' else 'hrtem', output)
         if output is None:
             self.status.set('FFT 合成条纹自检通过。')
+        elif self.current_job == 'saed':
+            try:
+                details = json.loads((output/'saed_results.json').read_text(encoding='utf-8-sig'))
+                self.status.set(f"SAED 完成：{len(details['rings'])} 个环，{len(details['spots'])} 个斑点；结果位于 {output}")
+            except Exception:
+                self.status.set('SAED 分析完成：'+str(output))
+        elif self.current_job == 'roi':
+            try:
+                details = json.loads((output/'summary.json').read_text(encoding='utf-8-sig'))
+                self.status.set(f"ROI/IFFT 完成：{details['count_rois']} 个 ROI；结果位于 {output}")
+            except Exception:
+                self.status.set('ROI/IFFT 完成：'+str(output))
         else:
             summary_file = output / 'summary.json'
             try:
@@ -249,14 +471,33 @@ class HRTEMApp:
                 except OSError:
                     self._append('Could not open annotated image automatically.\n')
 
-    def open_output(self):
-        folder = self.last_output if self.last_output and self.last_output.is_dir() else ROOT / 'outputs'
-        if not folder.is_dir():
+    def _set_result_link(self, kind, folder):
+        folder = Path(folder).resolve()
+        if kind == 'saed':
+            self.saed_result_target = folder
+            self.saed_result_link.set('打开 SAED 结果文件夹：' + str(folder))
+        else:
+            self.hrtem_result_target = folder
+            self.hrtem_result_link.set('打开 HRTEM 结果文件夹：' + str(folder))
+
+    def open_result_folder(self, kind):
+        if kind == 'saed':
+            folder = self.saed_result_target
+        elif kind == 'hrtem':
+            folder = self.hrtem_result_target
+        else:
+            folder = self.last_output
+        if folder is None or not Path(folder).is_dir():
+            folder = ROOT / 'outputs'
+        if not Path(folder).is_dir():
             folder = ROOT / 'sample_results'
         if os.name == 'nt':
-            os.startfile(str(folder))
+            os.startfile(str(Path(folder).resolve()))
         else:
             messagebox.showinfo('结果路径', str(folder))
+
+    def open_output(self):
+        self.open_result_folder('latest')
 
     def show_help(self):
         messagebox.showinfo('晶格间距测量说明',
